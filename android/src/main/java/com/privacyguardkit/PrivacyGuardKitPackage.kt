@@ -1,17 +1,17 @@
 package com.privacyguardkit
 
-import com.facebook.react.BaseReactPackage
+import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.NativeModule
 import com.facebook.react.bridge.ReactApplicationContext
-import com.facebook.react.module.model.ReactModuleInfoProvider
 import com.facebook.react.uimanager.ViewManager
 
-class PrivacyGuardKitViewPackage : BaseReactPackage() {
-  override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {
-    return listOf(PrivacyGuardKitViewManager())
-  }
+class PrivacyGuardKitPackage : ReactPackage {
 
-  override fun getModule(name: String, reactContext: ReactApplicationContext): NativeModule? = null
+    override fun createNativeModules(
+        reactContext: ReactApplicationContext
+    ): List<NativeModule> = listOf(PrivacyGuardKitModule(reactContext))
 
-  override fun getReactModuleInfoProvider() = ReactModuleInfoProvider { emptyMap() }
+    override fun createViewManagers(
+        reactContext: ReactApplicationContext
+    ): List<ViewManager<*, *>> = listOf(SecureViewManager())
 }

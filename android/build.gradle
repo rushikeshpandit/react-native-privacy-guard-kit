@@ -1,65 +1,62 @@
+// android/build.gradle
+
 buildscript {
-  ext.PrivacyGuardKit = [
-    kotlinVersion: "2.0.21",
-    minSdkVersion: 24,
-    compileSdkVersion: 36,
-    targetSdkVersion: 36
-  ]
-
-  ext.getExtOrDefault = { prop ->
-    if (rootProject.ext.has(prop)) {
-      return rootProject.ext.get(prop)
-    }
-
-    return PrivacyGuardKit[prop]
-  }
-
   repositories {
     google()
     mavenCentral()
   }
-
-  dependencies {
-    classpath "com.android.tools.build:gradle:8.7.2"
-    // noinspection DifferentKotlinGradleVersion
-    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:${getExtOrDefault('kotlinVersion')}"
-  }
 }
 
+def isNewArchitectureEnabled() {
+  return project.hasProperty("newArchEnabled") && project.newArchEnabled == "true"
+}
 
 apply plugin: "com.android.library"
-apply plugin: "kotlin-android"
+apply plugin: "org.jetbrains.kotlin.android"
 
+// The react plugin MUST be applied for codegen to run.
+// It reads codegenConfig from package.json and generates
+// the C++ files that autolinking.cpp depends on.
 apply plugin: "com.facebook.react"
 
 android {
+  compileSdkVersion 35
   namespace "com.privacyguardkit"
 
-  compileSdkVersion getExtOrDefault("compileSdkVersion")
-
   defaultConfig {
-    minSdkVersion getExtOrDefault("minSdkVersion")
-    targetSdkVersion getExtOrDefault("targetSdkVersion")
-  }
-
-  buildFeatures {
-    buildConfig true
-  }
-
-  buildTypes {
-    release {
-      minifyEnabled false
-    }
-  }
-
-  lint {
-    disable "GradleCompatible"
+    minSdkVersion 24
+    targetSdkVersion 35
   }
 
   compileOptions {
-    sourceCompatibility JavaVersion.VERSION_1_8
-    targetCompatibility JavaVersion.VERSION_1_8
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
   }
+
+  kotlinOptions {
+    jvmTarget = "17"
+  }
+
+  sourceSets {
+    main {
+      java.srcDirs = ["src/main/java", "src/main/kotlin"]
+    }
+  }
+}
+
+// CRITICAL: This react block tells the codegen plugin:
+//   - WHERE to find JS spec files (jsRootDir)
+//   - WHAT to name the generated C++ library (libraryName)
+//     This MUST match codegenConfig.name in package.json
+react {
+  jsRootDir = file("../src/specs")
+  libraryName = "PrivacyGuardKitViewSpec"
+  codegenJavaPackageName = "com.privacyguardkit"
+}
+
+repositories {
+  mavenCentral()
+  google()
 }
 
 dependencies {

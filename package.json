@@ -111,16 +111,14 @@
   },
   "codegenConfig": {
     "name": "PrivacyGuardKitViewSpec",
-    "type": "all",
-    "jsSrcsDir": "src",
+    "type": "components",
+    "jsSrcsDir": "src/specs",
     "android": {
       "javaPackageName": "com.privacyguardkit"
     },
     "ios": {
-      "components": {
-        "PrivacyGuardKitView": {
-          "className": "PrivacyGuardKitView"
-        }
+      "componentProvider": {
+        "RNSecureView": "RNSecureViewComponentView"
       }
     }
   },
