@@ -1,6 +1,6 @@
 {
   "name": "react-native-privacy-guard-kit",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "A production-ready React Native library to protect sensitive app content — disable screenshots, detect screen recording, guard the app switcher, block copy/paste, and listen to capture events. Fully typed, hook & provider support, New Architecture ready, and Google 16KB page size compatible.",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",
