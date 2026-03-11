@@ -1,33 +1,76 @@
 // PrivacyGuardKit.swift
-// The @objc(PrivacyGuardKit) annotation is what generates
-// _OBJC_CLASS_$_PrivacyGuardKit that the linker needs.
-// The class name MUST match the RCT_EXTERN_MODULE name in PrivacyGuardKit.m
-
+//
+// React Native Native Module — privacy protection for iOS.
+// Provides APIs for app-switcher protection, screen capture prevention, and
+// screenshot detection. Also handles iOS 13+ privacy features.
+//
 import Foundation
 import UIKit
 import React
 
 @objc(PrivacyGuardKit)
-class PrivacyGuardKit: RCTEventEmitter {
+final class PrivacyGuardKit: RCTEventEmitter {
 
-    static let screenshotTakenEvent  = "onScreenshotTaken"
-    static let recordingStartedEvent = "onScreenRecordingStarted"
-    static let recordingStoppedEvent = "onScreenRecordingStopped"
+    // MARK: - Feature Managers
+    //
+    // Implicitly-unwrapped optionals initialised eagerly in override init().
+    // This avoids Swift lazy-var thread-safety issues
+    private var captureManager: ScreenCaptureManager!
+    private var appSwitcherManager: AppSwitcherProtectionManager!
+    private var detectionManager: ScreenshotDetectionManager!
 
-    private var isCaptureDisabled    = false
-    private var isAppSwitcherGuarded = false
-    private var secureOverlay: UIView?
-    private var appSwitcherOverlay: UIView?
+    // MARK: - Listener Guard
+    //
+    // Prevents sendEvent(withName:body:) from being called before JS has any
+    // active subscribers, which causes a fatal RN assertion.
+    private var hasListeners = false
+
+    // MARK: - Init 
+
+    override init() {
+        super.init()
+        captureManager     = ScreenCaptureManager()
+        appSwitcherManager = AppSwitcherProtectionManager(captureManager: captureManager)
+        detectionManager   = ScreenshotDetectionManager { [weak self] eventName, body in
+            // Only forward events when JS has active listeners.
+            guard let self = self, self.hasListeners else { return }
+            self.sendEvent(withName: eventName, body: body)
+        }
+    }
+
+    // MARK: - RCTEventEmitter Overrides
 
     override static func moduleName() -> String! { "PrivacyGuardKit" }
+
     override static func requiresMainQueueSetup() -> Bool { true }
 
     override func supportedEvents() -> [String]! {
         [
-            PrivacyGuardKit.screenshotTakenEvent,
-            PrivacyGuardKit.recordingStartedEvent,
-            PrivacyGuardKit.recordingStoppedEvent,
+            ScreenshotDetectionManager.screenshotTakenEvent,    // "onScreenshotTaken"
+            ScreenshotDetectionManager.recordingStartedEvent,   // "onScreenRecordingStarted"
+            ScreenshotDetectionManager.recordingStoppedEvent,   // "onScreenRecordingStopped"
         ]
+    }
+
+    // MARK: - Listener Lifecycle
+
+    override func startObserving() { hasListeners = true  }
+    override func stopObserving()  { hasListeners = false }
+
+    // MARK: - Lifecycle
+
+    /// Cleans up all managers when the module is torn down by React Native.
+    ///
+    /// Called on hot-reload, app kill, or bridge teardown. Stops the detection
+    /// manager's NotificationCenter observers and removes any active overlays to
+    /// prevent ghost events and memory leaks after the bridge is gone.
+    override func invalidate() {
+        DispatchQueue.main.async { [weak self] in
+            self?.detectionManager.stopListening()
+            self?.captureManager.disable()
+            self?.appSwitcherManager.disable()
+        }
+        super.invalidate()
     }
 
     // MARK: - Screen Capture
@@ -37,9 +80,10 @@ class PrivacyGuardKit: RCTEventEmitter {
         _ resolve: @escaping RCTPromiseResolveBlock,
         reject: @escaping RCTPromiseRejectBlock
     ) {
-        DispatchQueue.main.async {
-            self.addSecureOverlay()
-            self.isCaptureDisabled = true
+        DispatchQueue.main.async { [weak self] in
+            // Guard self and resolve with safe fallback if deallocated.
+            guard let self = self else { resolve(false); return }
+            self.captureManager.enable()
             resolve(true)
         }
     }
@@ -49,73 +93,49 @@ class PrivacyGuardKit: RCTEventEmitter {
         _ resolve: @escaping RCTPromiseResolveBlock,
         reject: @escaping RCTPromiseRejectBlock
     ) {
-        DispatchQueue.main.async {
-            self.removeSecureOverlay()
-            self.isCaptureDisabled = false
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { resolve(false); return }
+            self.captureManager.disable()
             resolve(true)
         }
     }
 
+    /// isCaptureDisabled is written on the main thread; read it there too.
     @objc(isScreenCaptureDisabled:reject:)
     func isScreenCaptureDisabled(
         _ resolve: @escaping RCTPromiseResolveBlock,
         reject: @escaping RCTPromiseRejectBlock
     ) {
-        resolve(isCaptureDisabled)
+        DispatchQueue.main.async { [weak self] in
+            resolve(self?.captureManager.isCaptureDisabled ?? false)
+        }
     }
 
-    private func addSecureOverlay() {
-        guard let window = currentWindow(), secureOverlay == nil else { return }
-        let field = UITextField()
-        field.isSecureTextEntry = true
-        field.translatesAutoresizingMaskIntoConstraints = false
-        let container = UIView()
-        container.isUserInteractionEnabled = false
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(field)
-        window.addSubview(container)
-        NSLayoutConstraint.activate([
-            container.leadingAnchor.constraint(equalTo: window.leadingAnchor),
-            container.trailingAnchor.constraint(equalTo: window.trailingAnchor),
-            container.topAnchor.constraint(equalTo: window.topAnchor),
-            container.bottomAnchor.constraint(equalTo: window.bottomAnchor),
-            field.widthAnchor.constraint(equalTo: container.widthAnchor),
-            field.heightAnchor.constraint(equalTo: container.heightAnchor),
-            field.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            field.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-        ])
-        window.sendSubviewToBack(container)
-        secureOverlay = container
-    }
+    // MARK: - Screen Recording Detection
 
-    private func removeSecureOverlay() {
-        secureOverlay?.removeFromSuperview()
-        secureOverlay = nil
-    }
-
-    // MARK: - Screen Recording
-
+    /// UIScreen access must be on the main thread.
     @objc(isScreenBeingRecorded:reject:)
     func isScreenBeingRecorded(
         _ resolve: @escaping RCTPromiseResolveBlock,
         reject: @escaping RCTPromiseRejectBlock
     ) {
-        resolve(UIScreen.main.isCaptured)
+        DispatchQueue.main.async { [weak self] in
+            resolve(self?.detectionManager.isScreenBeingRecorded() ?? false)
+        }
     }
+
+    // MARK: - Screenshot & Recording Listeners
 
     @objc(startScreenshotListener:reject:)
     func startScreenshotListener(
         _ resolve: @escaping RCTPromiseResolveBlock,
         reject: @escaping RCTPromiseRejectBlock
     ) {
-        NotificationCenter.default.removeObserver(self)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(handleScreenshot),
-            name: UIApplication.userDidTakeScreenshotNotification, object: nil)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(handleRecordingChange),
-            name: UIScreen.capturedDidChangeNotification, object: nil)
-        resolve(true)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { resolve(false); return }
+            self.detectionManager.startListening()
+            resolve(true)
+        }
     }
 
     @objc(stopScreenshotListener:reject:)
@@ -123,41 +143,23 @@ class PrivacyGuardKit: RCTEventEmitter {
         _ resolve: @escaping RCTPromiseResolveBlock,
         reject: @escaping RCTPromiseRejectBlock
     ) {
-        NotificationCenter.default.removeObserver(
-            self, name: UIApplication.userDidTakeScreenshotNotification, object: nil)
-        NotificationCenter.default.removeObserver(
-            self, name: UIScreen.capturedDidChangeNotification, object: nil)
-        resolve(true)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { resolve(false); return }
+            self.detectionManager.stopListening()
+            resolve(true)
+        }
     }
 
-    @objc private func handleScreenshot() {
-        sendEvent(withName: PrivacyGuardKit.screenshotTakenEvent, body: nil)
-    }
-
-    @objc private func handleRecordingChange() {
-        let recording = UIScreen.main.isCaptured
-        sendEvent(
-            withName: recording
-                ? PrivacyGuardKit.recordingStartedEvent
-                : PrivacyGuardKit.recordingStoppedEvent,
-            body: ["isRecording": recording])
-    }
-
-    // MARK: - App Switcher
+    // MARK: - App-Switcher Protection
 
     @objc(enableAppSwitcherProtection:reject:)
     func enableAppSwitcherProtection(
         _ resolve: @escaping RCTPromiseResolveBlock,
         reject: @escaping RCTPromiseRejectBlock
     ) {
-        DispatchQueue.main.async {
-            NotificationCenter.default.addObserver(
-                self, selector: #selector(self.appWillResignActive),
-                name: UIApplication.willResignActiveNotification, object: nil)
-            NotificationCenter.default.addObserver(
-                self, selector: #selector(self.appDidBecomeActive),
-                name: UIApplication.didBecomeActiveNotification, object: nil)
-            self.isAppSwitcherGuarded = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { resolve(false); return }
+            self.appSwitcherManager.enable()
             resolve(true)
         }
     }
@@ -167,33 +169,11 @@ class PrivacyGuardKit: RCTEventEmitter {
         _ resolve: @escaping RCTPromiseResolveBlock,
         reject: @escaping RCTPromiseRejectBlock
     ) {
-        DispatchQueue.main.async {
-            NotificationCenter.default.removeObserver(
-                self, name: UIApplication.willResignActiveNotification, object: nil)
-            NotificationCenter.default.removeObserver(
-                self, name: UIApplication.didBecomeActiveNotification, object: nil)
-            self.removeAppSwitcherOverlay()
-            self.isAppSwitcherGuarded = false
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { resolve(false); return }
+            self.appSwitcherManager.disable()
             resolve(true)
         }
-    }
-
-    @objc private func appWillResignActive() {
-        guard let window = currentWindow() else { return }
-        let overlay = UIView(frame: window.bounds)
-        overlay.backgroundColor = .systemBackground
-        overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        window.addSubview(overlay)
-        appSwitcherOverlay = overlay
-    }
-
-    @objc private func appDidBecomeActive() {
-        removeAppSwitcherOverlay()
-    }
-
-    private func removeAppSwitcherOverlay() {
-        appSwitcherOverlay?.removeFromSuperview()
-        appSwitcherOverlay = nil
     }
 
     // MARK: - Clipboard
@@ -203,19 +183,9 @@ class PrivacyGuardKit: RCTEventEmitter {
         _ resolve: @escaping RCTPromiseResolveBlock,
         reject: @escaping RCTPromiseRejectBlock
     ) {
-        UIPasteboard.general.items = []
-        resolve(true)
-    }
-
-    // MARK: - Helpers
-
-    private func currentWindow() -> UIWindow? {
-        if #available(iOS 13.0, *) {
-            return UIApplication.shared.connectedScenes
-                .compactMap { $0 as? UIWindowScene }
-                .flatMap { $0.windows }
-                .first { $0.isKeyWindow }
+        DispatchQueue.main.async {
+            UIPasteboard.general.items = []
+            resolve(true)
         }
-        return UIApplication.shared.keyWindow
     }
 }
